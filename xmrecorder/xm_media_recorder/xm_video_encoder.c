@@ -163,6 +163,9 @@ static int VEncoder_enqueue(IEncoder_Opaque *opaque, IEncoder_QueueData *qdata)
 
     int cur_w = IJKALIGN(qdata->rgba_data.w, 2);
     int cur_h = IJKALIGN(qdata->rgba_data.h, 2);
+    if (qdata->rgba_data.format == FORMAT_YUY2) {
+        cur_w = qdata->rgba_data.w * 2;
+    }
 
     if(opaque->config.w != cur_w || opaque->config.h != cur_h)
     {
@@ -256,18 +259,27 @@ static bool VEncoder_process(IEncoder_Opaque *opaque, RgbaData *data)
 
     if(src_frame)
     {
-        if(RGBA_CHANNEL == 4)
-            ABGRToI420(rgba, RGBA_CHANNEL * data->w,
+        if(RGBA_CHANNEL == 4) {
+            if(data->format == FORMAT_YUY2) {
+                YUY2ToI420(rgba, 2 * data->w * 2,
                         src_frame->data[0], src_frame->linesize[0],
                         src_frame->data[1], src_frame->linesize[1],
                         src_frame->data[2], src_frame->linesize[2],
                         opaque->config.w, opaque->config.h);
-        else
+            } else if (data->format == FORMAT_RGBA8888) {
+                ABGRToI420(rgba, RGBA_CHANNEL * data->w,
+                        src_frame->data[0], src_frame->linesize[0],
+                        src_frame->data[1], src_frame->linesize[1],
+                        src_frame->data[2], src_frame->linesize[2],
+                        opaque->config.w, opaque->config.h);
+            }
+        } else {
             RGB24ToI420(rgba, RGBA_CHANNEL * data->w,
-                        src_frame->data[0], src_frame->linesize[0],
-                        src_frame->data[1], src_frame->linesize[1],
-                        src_frame->data[2], src_frame->linesize[2],
-                        opaque->config.w, opaque->config.h);
+                    src_frame->data[0], src_frame->linesize[0],
+                    src_frame->data[1], src_frame->linesize[1],
+                    src_frame->data[2], src_frame->linesize[2],
+                    opaque->config.w, opaque->config.h);
+        }
     }
 
     src_frame->pts = data->pts;

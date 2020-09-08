@@ -31,6 +31,8 @@ void xm_media_recorder_freep(XMMediaRecorder **mr);
 void xm_media_recorder_msg_thread_exit(XMMediaRecorder *mr);
 void xm_media_recorder_stop(XMMediaRecorder *mr);
 int xm_media_recorder_queue_sizes(XMMediaRecorder *mr);
+void xm_media_recorder_glMapBufferRange_put(XMMediaRecorder *mr,
+    unsigned char *rgba, int size, int w, int h, int pixelStride, int rowPadding, int format);
 void xm_media_recorder_put(XMMediaRecorder *mr, const unsigned char *rgba, int w, int h,
         int pixelStride, int rowPadding, int rotate_degree, bool flipHorizontal, bool flipVertical);
 void xm_media_recorder_start(XMMediaRecorder *mr);

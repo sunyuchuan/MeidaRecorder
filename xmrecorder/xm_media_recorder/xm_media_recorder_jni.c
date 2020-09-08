@@ -7,6 +7,10 @@
 #include "../ijkyuv/include/libyuv.h"
 #include "../xm_media_recorder/xm_media_recorder.h"
 
+#ifdef SUPPORT_OPENGLES30
+#include <GLES3/gl3.h>
+#endif
+
 #define TAG "xm_media_recorder_jni"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -24,6 +28,42 @@ typedef struct xm_media_recorder_fields_t {
 static xm_media_recorder_fields_t g_clazz;
 static JavaVM* g_jvm;
 static XMMediaRecorder *jni_get_media_recorder(JNIEnv* env, jobject thiz);
+
+#ifdef SUPPORT_OPENGLES30
+static void
+XMMediaRecorder_glReadPixels(JNIEnv *env, jobject obj, jint x, jint y, jint width, jint height,
+        jint format, jint type) {
+    glReadPixels(x, y, width, height, format, type, 0);
+}
+
+static void
+XMMediaRecorder_glMapBufferRange_put(JNIEnv *env, jobject thiz, jint target, jint offset,
+        jint length, jint access, jint w, jint h, jint pixelStride, jint rowPadding, jint format) {
+    GLubyte *src = (GLubyte*)glMapBufferRange(target, offset, length, access);
+    if(!src) {
+        LOGE("glMapBufferRange failed");
+        return;
+    }
+
+    XMMediaRecorder *mr = jni_get_media_recorder(env, thiz);
+    JNI_CHECK_GOTO(mr, env, "java/lang/IllegalStateException", "mrjni: put: null mr", LABEL_RETURN);
+    xm_media_recorder_glMapBufferRange_put(mr, (unsigned char *)src, length, w, h, pixelStride, rowPadding, format);
+LABEL_RETURN:
+    xmmr_dec_ref_p(&mr);
+}
+#else
+static void
+XMMediaRecorder_glReadPixels(JNIEnv *env, jobject obj, jint x, jint y, jint width, jint height,
+        jint format, jint type) {
+    LOGE("XMMediaRecorder_glReadPixels is not supported");
+}
+
+static void
+XMMediaRecorder_glMapBufferRange_put(JNIEnv *env, jobject thiz, jint target, jint offset,
+        jint length, jint access, jint w, jint h, jint pixelStride, jint rowPadding, jint format) {
+    LOGE("XMMediaRecorder_glMapBufferRange_put is not supported");
+}
+#endif
 
 static void
 XMMediaRecorder_NV21toABGR(JNIEnv *env, jobject obj, jbyteArray yuv420sp, jint width, jint height, jbyteArray rgbaOut)
@@ -398,12 +438,14 @@ static JNINativeMethod g_methods[] = {
     { "_setConfigParams",       "(Ljava/util/HashMap;)Z",     (void *) XMMediaRecorder_setConfigParams },
     { "_start",                 "()V",                        (void *) XMMediaRecorder_start },
     { "_stop",                  "()V",                        (void *) XMMediaRecorder_stop },
-    { "_put",                   "([BIIIIIZZ)V",               (void *) XMMediaRecorder_put },
     { "_queue_sizes",           "()I",                        (void *) XMMediaRecorder_queue_sizes },
+    { "_put",                   "([BIIIIIZZ)V",               (void *) XMMediaRecorder_put },
     { "_reset",                 "()V",                        (void *) XMMediaRecorder_reset },
     { "_release",               "()V",                        (void *) XMMediaRecorder_release },
     { "_prepareAsync",          "()V",                        (void *) XMMediaRecorder_prepareAsync },
     { "NV21toABGR",             "([BII[B)V",                  (void *) XMMediaRecorder_NV21toABGR },
+    { "glReadPixels",           "(IIIIII)V",                  (void *) XMMediaRecorder_glReadPixels },
+    { "_glMapBufferRange_put",  "(IIIIIIIII)V",               (void *) XMMediaRecorder_glMapBufferRange_put },
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved)

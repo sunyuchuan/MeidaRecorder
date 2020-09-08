@@ -4,6 +4,12 @@
 #include <stddef.h>
 #include "libavutil/frame.h"
 
+enum DataFormat
+{
+    FORMAT_RGBA8888 = 1,
+    FORMAT_YUY2 = 2
+} DataFormat;
+
 typedef struct RgbaData
 {
     unsigned char *rgba;
@@ -15,6 +21,7 @@ typedef struct RgbaData
     bool processed;
     size_t rgba_size;
     int64_t pts;
+    enum DataFormat format;
 } RgbaData;
 
 RgbaData *rgba_data_creare(const unsigned char *rgba, int w, int h, int rotate_degree, bool flipHorizontal, bool flipVertical);

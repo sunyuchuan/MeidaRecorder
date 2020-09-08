@@ -4,6 +4,7 @@
 #include "libyuv.h"
 #include "xm_rgba_process.h"
 #include "xm_encoder_config.h"
+#include "xm_memcpy_neon.h"
 
 #define TAG "xm_media_recorder"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG,TAG,__VA_ARGS__)
@@ -253,6 +254,35 @@ int xmmr_get_msg(XMMediaRecorder *mr, AVMessage *msg, int block)
     return -1;
 }
 
+static void xmmr_encoder_enqueue(XMMediaRecorder *mr, IEncoder_QueueData *qdata)
+{
+    if(mr == NULL || qdata == NULL)
+    {
+        LOGE("mr or qdata is NULL, xmmr_encoder_enqueue return\n");
+        return;
+    }
+
+    if(IEncoder_enqueue(mr->AEncoder, qdata) < 0
+        ||IEncoder_enqueue(mr->VEncoder, qdata) < 0)
+    {
+        if(xmmr_chkst_put_l(mr->mr_state) == 0)
+        {
+            LOGE("IEncoder_enqueue failed");
+            xmmr_notify_msg1(&mr->msg_queue, MR_MSG_ERROR);
+        }
+    } else {
+        if(mr->start_mux)
+        {
+            pthread_mutex_lock(&mr->mutex);
+            mr->start_mux = false;
+            pthread_mutex_unlock(&mr->mutex);
+            if(muxer_startAsync(mr->mm) < 0) {
+                xmmr_notify_msg1(&mr->msg_queue, MR_MSG_ERROR);
+            }
+        }
+    }
+}
+
 static void xm_media_recorder_free_l(XMMediaRecorder *mr)
 {
     LOGD("xm_media_recorder_free_l");
@@ -344,12 +374,6 @@ void xm_media_recorder_stop(XMMediaRecorder *mr)
 {
     assert(mr);
     LOGD("xm_media_recorder_stop()\n");
-
-    if(mr->mr_state == MR_STATE_STOPPED) {
-        LOGD("%s mr->mr_state == MR_STATE_STOPPED, exit\n", __func__);
-        return;
-    }
-
     pthread_mutex_lock(&mr->mutex);
     xmmr_change_state_l(mr, MR_STATE_REQ_STOP);
     pthread_mutex_unlock(&mr->mutex);
@@ -366,10 +390,88 @@ int xm_media_recorder_queue_sizes(XMMediaRecorder *mr)
     return IEncoder_queue_sizes(mr->VEncoder);
 }
 
+void xm_media_recorder_glMapBufferRange_put(XMMediaRecorder *mr,
+    unsigned char *rgba, int size, int w, int h, int pixelStride, int rowPadding, int format)
+{
+    if(mr == NULL || rgba == NULL)
+    {
+        LOGE("mr or rgba is NULL, glMapBufferRange_put return\n");
+        return;
+    }
+
+    if(xmmr_chkst_put_l(mr->mr_state) != 0)
+    {
+        LOGE("xmmr_chkst_put_l fail(), glMapBufferRange_put return\n");
+        return;
+    }
+
+    IEncoder_QueueData qdata;
+    qdata.rgba_data.w = w;
+    qdata.rgba_data.h = h;
+    qdata.rgba_data.rotate_degree = 0;
+    qdata.rgba_data.flipHorizontal = false;
+    qdata.rgba_data.flipVertical = false;
+    qdata.rgba_data.rgba_size = RGBA_CHANNEL*w*h;
+    qdata.rgba_data.processed = false;
+    qdata.rgba_data.rgba = NULL;
+    switch (format) {
+        case 1:
+            qdata.rgba_data.format = FORMAT_RGBA8888;
+            break;
+        case 2:
+            qdata.rgba_data.format = FORMAT_YUY2;
+            break;
+        default:
+            qdata.rgba_data.format = FORMAT_RGBA8888;
+            break;
+    }
+
+    unsigned char *glMapBuffer = (unsigned char *)av_mallocz(sizeof(char) * size);
+    if(glMapBuffer == NULL)
+    {
+        LOGE("mallocz glMapBuffer failed");
+        return;
+    }
+    xmmr_memcpy_neon(glMapBuffer, rgba, size);
+
+    if(pixelStride == 4 && rowPadding == 0) {
+        qdata.rgba_data.rgba = glMapBuffer;
+    } else {
+        qdata.rgba_data.rgba = (unsigned char *)av_mallocz(sizeof(char)*qdata.rgba_data.rgba_size);
+        if(!qdata.rgba_data.rgba)
+        {
+            LOGE("glMapBufferRange_put, mallocz rgba_data.rgba failed");
+            xmmr_notify_msg1(&mr->msg_queue, MR_MSG_ERROR);
+            av_free(glMapBuffer);
+            return;
+        }
+
+        int offset = 0;
+        for (int i = 0; i < h; ++i) {
+            for (int j = 0; j < w; ++j) {
+                qdata.rgba_data.rgba[(i*w + j) * RGBA_CHANNEL + 3] = (glMapBuffer[offset + 3] & 0xff); // A
+                qdata.rgba_data.rgba[(i*w + j) * RGBA_CHANNEL + 2] = (glMapBuffer[offset + 2] & 0xff); // B
+                qdata.rgba_data.rgba[(i*w + j) * RGBA_CHANNEL + 1] = (glMapBuffer[offset + 1] & 0xff); // G
+                qdata.rgba_data.rgba[(i*w + j) * RGBA_CHANNEL + 0] = (glMapBuffer[offset] & 0xff); // R
+                offset += pixelStride;
+            }
+            offset += rowPadding;
+        }
+        av_free(glMapBuffer);
+    }
+
+    xmmr_encoder_enqueue(mr, &qdata);
+}
+
 void xm_media_recorder_put(XMMediaRecorder *mr, const unsigned char *rgba, int w, int h,
         int pixelStride, int rowPadding, int rotate_degree, bool flipHorizontal, bool flipVertical)
 {
-    assert(mr);
+    if(mr == NULL || rgba == NULL)
+    {
+        LOGE("mr or rgba is NULL, xm_media_recorder_put return\n");
+        return;
+    }
+
     if(xmmr_chkst_put_l(mr->mr_state) != 0)
     {
         LOGE("xmmr_chkst_put_l fail(), xm_media_recorder_put return\n");
@@ -389,12 +491,13 @@ void xm_media_recorder_put(XMMediaRecorder *mr, const unsigned char *rgba, int w
     qdata.rgba_data.flipVertical = flipVertical;
     qdata.rgba_data.rgba_size = RGBA_CHANNEL*w*h;
     qdata.rgba_data.processed = false;
+    qdata.rgba_data.rgba = NULL;
+    qdata.rgba_data.format = FORMAT_RGBA8888;
 
-    //release in encoder thread after rgba_queue_get
     qdata.rgba_data.rgba = (unsigned char *)av_mallocz(sizeof(char)*qdata.rgba_data.rgba_size);
     if(!qdata.rgba_data.rgba)
     {
-        LOGE("mallocz rgba failed");
+        LOGE("mallocz rgba failed, xm_media_recorder_put");
         xmmr_notify_msg1(&mr->msg_queue, MR_MSG_ERROR);
         return;
     }
@@ -410,29 +513,8 @@ void xm_media_recorder_put(XMMediaRecorder *mr, const unsigned char *rgba, int w
         }
         offset += rowPadding;
     }
-    //IEncoder_QueueData temp = qdata;
-    //temp.rgba_data.rgba = rgba;
-    //RgbaProcess(qdata.rgba_data.rgba, &temp, &qdata.rgba_data.processed);
-    //memcpy(qdata.rgba_data.rgba, rgba, qdata.rgba_data.rgba_size);
-    if(IEncoder_enqueue(mr->AEncoder, &qdata) < 0
-        ||IEncoder_enqueue(mr->VEncoder, &qdata) < 0)
-    {
-        if(xmmr_chkst_put_l(mr->mr_state) == 0)
-        {
-            LOGE("IEncoder_enqueue failed");
-            xmmr_notify_msg1(&mr->msg_queue, MR_MSG_ERROR);
-        }
-    } else {
-        if(mr->start_mux)
-        {
-            pthread_mutex_lock(&mr->mutex);
-            mr->start_mux = false;
-            pthread_mutex_unlock(&mr->mutex);
-            if(muxer_startAsync(mr->mm) < 0) {
-                xmmr_notify_msg1(&mr->msg_queue, MR_MSG_ERROR);
-            }
-        }
-    }
+
+    xmmr_encoder_enqueue(mr, &qdata);
 }
 
 static int xm_media_recorder_start_l(XMMediaRecorder *mr)
@@ -557,19 +639,15 @@ bool xm_media_recorder_setConfigParams(XMMediaRecorder *mr, const char *key, con
 
     if (!strcasecmp(key, "width")) {
         mr->config.w = IJKALIGN(atoi(value), 2);
-        LOGD("config.width %d\n", mr->config.w);
     } else if (!strcasecmp(key, "height")) {
         mr->config.h = IJKALIGN(atoi(value), 2);
-        LOGD("config.height %d\n", mr->config.h);
     } else if (!strcasecmp(key, "bit_rate")) {
         mr->config.bit_rate = atoi(value);
     } else if (!strcasecmp(key, "fps")) {
         mr->config.fps = atoi(value);
-        LOGD("config.fps %d\n", mr->config.fps);
         mr->config.time_base = (AVRational) {1, mr->config.fps * mr->config.multiple};
     } else if (!strcasecmp(key, "gop_size")) {
         mr->config.gop_size = atoi(value);
-        LOGD("config.gop_size %d\n", mr->config.gop_size);
     } else if (!strcasecmp(key, "crf")) {
         mr->config.crf = atoi(value);
     } else if (!strcasecmp(key, "multiple")) {
@@ -579,7 +657,6 @@ bool xm_media_recorder_setConfigParams(XMMediaRecorder *mr, const char *key, con
         mr->config.max_b_frames = atoi(value);
     } else if (!strcasecmp(key, "CFR")) {
         mr->config.CFR = atoi(value) == 0 ? false : true;
-        LOGD("config.CFR %d\n", mr->config.CFR);
     } else if (!strcasecmp(key, "output_filename")) {
         if(mr->config.output_filename)
             av_free(mr->config.output_filename);
