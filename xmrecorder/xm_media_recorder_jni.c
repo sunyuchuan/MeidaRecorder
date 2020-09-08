@@ -10,6 +10,7 @@
 #define TAG "xm_media_recorder_jni"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 #define JNI_CLASS_XM_MEDIA_RECORDER "com/xmly/media/camera/view/recorder/XMMediaRecorder"
 
@@ -22,6 +23,7 @@ typedef struct xm_media_recorder_fields_t {
 
 static xm_media_recorder_fields_t g_clazz;
 static JavaVM* g_jvm;
+static XMMediaRecorder *jni_get_media_recorder(JNIEnv* env, jobject thiz);
 
 static void
 XMMediaRecorder_NV21toABGR(JNIEnv *env, jobject obj, jbyteArray yuv420sp, jint width, jint height, jbyteArray rgbaOut)
@@ -205,6 +207,18 @@ LABEL_RETURN:
     xmmr_dec_ref_p(&mr);
 }
 
+static int XMMediaRecorder_queue_sizes(JNIEnv* env, jobject thiz)
+{
+    int ret = 0;
+    XMMediaRecorder *mr = jni_get_media_recorder(env, thiz);
+    JNI_CHECK_GOTO(mr, env, "java/lang/IllegalStateException", "mrjni: queue_sizes: null mr", LABEL_RETURN);
+
+    ret = xm_media_recorder_queue_sizes(mr);
+LABEL_RETURN:
+    xmmr_dec_ref_p(&mr);
+    return ret;
+}
+
 static void XMMediaRecorder_put(JNIEnv* env, jobject thiz, jbyteArray rgba, jint w,
     jint h, jint pixelStride, jint rowPadding, jint rotate_degree, jboolean flipHorizontal, jboolean flipVertical)
 {
@@ -243,61 +257,125 @@ LABEL_RETURN:
     xmmr_dec_ref_p(&mr);
 }
 
-static bool XMMediaRecorder_setConfigParams(JNIEnv *env, jobject thiz, jintArray jintParams, jobjectArray jcharParams)
+static bool XMMediaRecorder_setConfigParams(JNIEnv *env, jobject thiz, jobject hashMap)
 {
     LOGD("%s\n", __func__);
     bool ret = false;
-    int *intParams = NULL;
-    char **charParams = NULL;
+    jclass mapClass = NULL;
+    jobject set = NULL;
+    jclass setClass = NULL;
+    jobject iter = NULL;
+    jclass iteratorClass = NULL;
+    jclass entryClass = NULL;
 
-    jint *cIntParams = (*env)->GetIntArrayElements(env, jintParams, NULL);
-    if (cIntParams == NULL) {
-        goto end;
-    }
-    jint intParamsLen = (*env)->GetArrayLength(env, jintParams);
-    intParams = (int *)av_mallocz(sizeof(int) * intParamsLen);
-    if(intParams == NULL) {
-        (*env)->ReleaseIntArrayElements(env, jintParams, cIntParams, 0);
-        goto end;
-    }
-    memcpy(intParams, cIntParams, sizeof(int) * intParamsLen);
-    (*env)->ReleaseIntArrayElements(env, jintParams, cIntParams, 0);
-
-    jsize charParamsLen = (*env)->GetArrayLength(env, jcharParams);
-    charParams = (char **)av_mallocz(sizeof(char *) * charParamsLen);
-    if(charParams == NULL) {
+    mapClass = (*env)->FindClass(env, "java/util/Map");
+    if (mapClass == NULL) {
         goto end;
     }
 
-    for(int i = 0; i < charParamsLen; i++)
-    {
-        jstring string = (*env)->GetObjectArrayElement(env, jcharParams, i);
-        const char *tmp = (*env)->GetStringUTFChars(env, string, 0);
-        if(NULL == tmp)
-            goto end;
-        charParams[i] = av_strdup(tmp);
-        (*env)->ReleaseStringUTFChars(env, string, tmp);
-        (*env)->DeleteLocalRef(env, string);
+    jmethodID entrySet = (*env)->GetMethodID(env, mapClass, "entrySet", "()Ljava/util/Set;");
+    if (entrySet == NULL) {
+        goto end;
+    }
+
+    set = (*env)->CallObjectMethod(env, hashMap, entrySet);
+    if (set == NULL) {
+        goto end;
+    }
+
+    setClass = (*env)->FindClass(env, "java/util/Set");
+    if (setClass == NULL) {
+        goto end;
+    }
+
+    jmethodID iterator = (*env)->GetMethodID(env, setClass, "iterator", "()Ljava/util/Iterator;");
+    if (iterator == NULL) {
+        goto end;
+    }
+
+    iter = (*env)->CallObjectMethod(env, set, iterator);
+    if (iter == NULL) {
+        goto end;
+    }
+
+    iteratorClass = (*env)->FindClass(env, "java/util/Iterator");
+    if (iteratorClass == NULL) {
+        goto end;
+    }
+
+    jmethodID hasNext = (*env)->GetMethodID(env, iteratorClass, "hasNext", "()Z");
+    if (hasNext == NULL) {
+        goto end;
+    }
+
+    jmethodID next = (*env)->GetMethodID(env, iteratorClass, "next", "()Ljava/lang/Object;");
+    if (next == NULL) {
+        goto end;
+    }
+
+    entryClass = (*env)->FindClass(env, "java/util/Map$Entry");
+    if (entryClass == NULL) {
+        goto end;
+    }
+
+    jmethodID getKey = (*env)->GetMethodID(env, entryClass, "getKey", "()Ljava/lang/Object;");
+    if (getKey == NULL) {
+        goto end;
+    }
+
+    jmethodID getValue = (*env)->GetMethodID(env, entryClass, "getValue", "()Ljava/lang/Object;");
+    if (getValue == NULL) {
+        goto end;
     }
 
     XMMediaRecorder *mr = jni_get_media_recorder(env, thiz);
     JNI_CHECK_GOTO(mr, env, "java/lang/IllegalStateException", "mrjni: start: null mr", LABEL_RETURN);
 
-    ret = xm_media_recorder_setConfigParams(mr, intParams, intParamsLen, charParams, charParamsLen);
+    xm_media_recorder_initConfigParams(mr);
+    while ((*env)->CallBooleanMethod(env, iter, hasNext)) {
+        jobject entry = (*env)->CallObjectMethod(env, iter, next);
+        jstring key = (jstring) (*env)->CallObjectMethod(env, entry, getKey);
+        jstring value = (jstring) (*env)->CallObjectMethod(env, entry, getValue);
+        const char* keyStr = (*env)->GetStringUTFChars(env, key, NULL);
+        if (!keyStr) {
+            (*env)->DeleteLocalRef(env, value);
+            (*env)->DeleteLocalRef(env, key);
+            (*env)->DeleteLocalRef(env, entry);
+            goto LABEL_RETURN;
+        }
+
+        const char* valueStr = (*env)->GetStringUTFChars(env, value, NULL);
+        if (!valueStr) {
+            (*env)->DeleteLocalRef(env, value);
+            (*env)->ReleaseStringUTFChars(env, key, keyStr);
+            (*env)->DeleteLocalRef(env, key);
+            (*env)->DeleteLocalRef(env, entry);
+            goto LABEL_RETURN;
+        }
+
+        ret = xm_media_recorder_setConfigParams(mr, keyStr, valueStr);
+        (*env)->ReleaseStringUTFChars(env, value, valueStr);
+        (*env)->DeleteLocalRef(env, value);
+        (*env)->ReleaseStringUTFChars(env, key, keyStr);
+        (*env)->DeleteLocalRef(env, key);
+        (*env)->DeleteLocalRef(env, entry);
+    }
+
 LABEL_RETURN:
     xmmr_dec_ref_p(&mr);
 end:
-    if(intParams)
-        av_free(intParams);
-    if(charParams)
-    {
-        for(int i = 0; i < charParamsLen; i++)
-        {
-            if(charParams[i])
-                av_free(charParams[i]);
-        }
-        av_free(charParams);
-    }
+    if(entryClass != NULL)
+        (*env)->DeleteLocalRef(env, entryClass);
+    if(iteratorClass != NULL)
+        (*env)->DeleteLocalRef(env, iteratorClass);
+    if(iter != NULL)
+        (*env)->DeleteLocalRef(env, iter);
+    if(setClass != NULL)
+        (*env)->DeleteLocalRef(env, setClass);
+    if(set != NULL)
+        (*env)->DeleteLocalRef(env, set);
+    if(mapClass != NULL)
+        (*env)->DeleteLocalRef(env, mapClass);
     return ret;
 }
 
@@ -317,10 +395,11 @@ LABEL_RETURN:
 static JNINativeMethod g_methods[] = {
     { "native_setup",           "(Ljava/lang/Object;ZZZ)V",   (void *) XMMediaRecorder_native_setup },
     { "native_finalize",        "()V",                        (void *) XMMediaRecorder_native_finalize },
-    { "_setConfigParams",       "([I[Ljava/lang/String;)Z",   (void *) XMMediaRecorder_setConfigParams },
+    { "_setConfigParams",       "(Ljava/util/HashMap;)Z",     (void *) XMMediaRecorder_setConfigParams },
     { "_start",                 "()V",                        (void *) XMMediaRecorder_start },
     { "_stop",                  "()V",                        (void *) XMMediaRecorder_stop },
     { "_put",                   "([BIIIIIZZ)V",               (void *) XMMediaRecorder_put },
+    { "_queue_sizes",           "()I",                        (void *) XMMediaRecorder_queue_sizes },
     { "_reset",                 "()V",                        (void *) XMMediaRecorder_reset },
     { "_release",               "()V",                        (void *) XMMediaRecorder_release },
     { "_prepareAsync",          "()V",                        (void *) XMMediaRecorder_prepareAsync },

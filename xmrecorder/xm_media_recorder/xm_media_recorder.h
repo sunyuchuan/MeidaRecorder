@@ -30,12 +30,13 @@ typedef struct XMMediaRecorder
 void xm_media_recorder_freep(XMMediaRecorder **mr);
 void xm_media_recorder_msg_thread_exit(XMMediaRecorder *mr);
 void xm_media_recorder_stop(XMMediaRecorder *mr);
+int xm_media_recorder_queue_sizes(XMMediaRecorder *mr);
 void xm_media_recorder_put(XMMediaRecorder *mr, const unsigned char *rgba, int w, int h,
         int pixelStride, int rowPadding, int rotate_degree, bool flipHorizontal, bool flipVertical);
 void xm_media_recorder_start(XMMediaRecorder *mr);
 int xm_media_recorder_prepareAsync(XMMediaRecorder *mr);
-bool xm_media_recorder_setConfigParams(XMMediaRecorder *mr, int *intParams,
-        int intParamsLen, char **charParams, int charParamsLen);
+void xm_media_recorder_initConfigParams(XMMediaRecorder *mr);
+bool xm_media_recorder_setConfigParams(XMMediaRecorder *mr, const char *key, const char *value);
 XMMediaRecorder *xm_media_recorder_create(int(*msg_loop)(void*), bool useSoftEncoder,
         bool audioEnable, bool videoEnable);
 void xm_media_recorder_ffmpeg_init();

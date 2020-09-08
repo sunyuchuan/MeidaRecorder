@@ -7,6 +7,7 @@ typedef struct XMEncoderConfig {
     int w;
     int h;
     int fps;
+    bool CFR; //constant frame rate.
     int bit_rate;
     int gop_size;
     char *mime;

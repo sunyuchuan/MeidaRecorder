@@ -9,6 +9,7 @@
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG,TAG,__VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR,TAG,__VA_ARGS__)
 
+#define XMMR_MAX_QUEUE_SIZES 7
 #define XMMR_FAILED -1
 #define XMMR_OUT_OF_MEMORY -2
 #define XMMR_INVALID_STATE -3
@@ -266,6 +267,10 @@ static void xm_media_recorder_free_l(XMMediaRecorder *mr)
         av_free(mr->config.preset);
     mr->config.preset = NULL;
 
+    if(mr->config.tune)
+        av_free(mr->config.tune);
+    mr->config.tune = NULL;
+
     IEncoder_freep(&mr->VEncoder);
     IEncoder_freep(&mr->AEncoder);
     muxer_freep(&mr->mm);
@@ -339,10 +344,26 @@ void xm_media_recorder_stop(XMMediaRecorder *mr)
 {
     assert(mr);
     LOGD("xm_media_recorder_stop()\n");
+
+    if(mr->mr_state == MR_STATE_STOPPED) {
+        LOGD("%s mr->mr_state == MR_STATE_STOPPED, exit\n", __func__);
+        return;
+    }
+
     pthread_mutex_lock(&mr->mutex);
     xmmr_change_state_l(mr, MR_STATE_REQ_STOP);
     pthread_mutex_unlock(&mr->mutex);
     xmmr_notify_msg1(&mr->msg_queue, MR_REQ_STOP);
+}
+
+int xm_media_recorder_queue_sizes(XMMediaRecorder *mr)
+{
+    if(mr == NULL) {
+        LOGE("mr is NULL, xm_media_recorder_queue_sizes return\n");
+        return 0;
+    }
+
+    return IEncoder_queue_sizes(mr->VEncoder);
 }
 
 void xm_media_recorder_put(XMMediaRecorder *mr, const unsigned char *rgba, int w, int h,
@@ -352,6 +373,11 @@ void xm_media_recorder_put(XMMediaRecorder *mr, const unsigned char *rgba, int w
     if(xmmr_chkst_put_l(mr->mr_state) != 0)
     {
         LOGE("xmmr_chkst_put_l fail(), xm_media_recorder_put return\n");
+        return;
+    }
+
+    if(xm_media_recorder_queue_sizes(mr) > XMMR_MAX_QUEUE_SIZES) {
+        LOGE("queue_sizes than the max value, this frame is discarded\n");
         return;
     }
 
@@ -492,13 +518,10 @@ int xm_media_recorder_prepareAsync(XMMediaRecorder *mr)
     return retval;
 }
 
-bool xm_media_recorder_setConfigParams(XMMediaRecorder *mr, int *intParams, int intParamsLen, char **charParams, int charParamsLen)
+void xm_media_recorder_initConfigParams(XMMediaRecorder *mr)
 {
-    if(!mr || !intParams || !charParams)
-        return false;
-
-    if(intParamsLen < 8 || charParamsLen < 2)
-        return false;
+    if(!mr)
+        return;
 
     if(mr->config.output_filename)
         av_free(mr->config.output_filename);
@@ -508,22 +531,72 @@ bool xm_media_recorder_setConfigParams(XMMediaRecorder *mr, int *intParams, int 
         av_free(mr->config.preset);
     mr->config.preset = NULL;
 
-    mr->config.w = IJKALIGN(intParams[0], 2);
-    mr->config.h = IJKALIGN(intParams[1], 2);
-    mr->config.bit_rate = intParams[2];
-    mr->config.fps = intParams[3];
-    mr->config.gop_size = intParams[4];
-    mr->config.crf = intParams[5];
-    mr->config.multiple = intParams[6];
-    mr->config.max_b_frames = intParams[7];
-    mr->config.output_filename = av_strdup(charParams[0]);
-    mr->config.preset = av_strdup(charParams[1]);
-    LOGD("config.w %d, config.h %d, config.fps %d, config.preset %s\n", mr->config.w, mr->config.h, mr->config.fps, mr->config.preset);
+    if(mr->config.tune)
+        av_free(mr->config.tune);
+    mr->config.tune = NULL;
 
+    mr->config.w = 1280;
+    mr->config.h = 720;
+    mr->config.bit_rate = 700000;
+    mr->config.fps = 15;
+    mr->config.gop_size = mr->config.fps * 5;
+    mr->config.crf = 23;
+    mr->config.multiple = 1000;
+    mr->config.max_b_frames = 0;
+    mr->config.CFR = false;
+    mr->config.time_base = (AVRational) {1, mr->config.fps * mr->config.multiple};
     mr->config.pix_format = AV_PIX_FMT_YUV420P;
     mr->config.mime = MIME_VIDEO_AVC;
     mr->config.codec_id = AV_CODEC_ID_H264;
-    mr->config.time_base = (AVRational) {1, mr->config.fps * mr->config.multiple};
+}
+
+bool xm_media_recorder_setConfigParams(XMMediaRecorder *mr, const char *key, const char *value)
+{
+    if(!mr || !key || !value)
+        return false;
+
+    if (!strcasecmp(key, "width")) {
+        mr->config.w = IJKALIGN(atoi(value), 2);
+        LOGD("config.width %d\n", mr->config.w);
+    } else if (!strcasecmp(key, "height")) {
+        mr->config.h = IJKALIGN(atoi(value), 2);
+        LOGD("config.height %d\n", mr->config.h);
+    } else if (!strcasecmp(key, "bit_rate")) {
+        mr->config.bit_rate = atoi(value);
+    } else if (!strcasecmp(key, "fps")) {
+        mr->config.fps = atoi(value);
+        LOGD("config.fps %d\n", mr->config.fps);
+        mr->config.time_base = (AVRational) {1, mr->config.fps * mr->config.multiple};
+    } else if (!strcasecmp(key, "gop_size")) {
+        mr->config.gop_size = atoi(value);
+        LOGD("config.gop_size %d\n", mr->config.gop_size);
+    } else if (!strcasecmp(key, "crf")) {
+        mr->config.crf = atoi(value);
+    } else if (!strcasecmp(key, "multiple")) {
+        mr->config.multiple = atoi(value);
+        mr->config.time_base = (AVRational) {1, mr->config.fps * mr->config.multiple};
+    } else if (!strcasecmp(key, "max_b_frames")) {
+        mr->config.max_b_frames = atoi(value);
+    } else if (!strcasecmp(key, "CFR")) {
+        mr->config.CFR = atoi(value) == 0 ? false : true;
+        LOGD("config.CFR %d\n", mr->config.CFR);
+    } else if (!strcasecmp(key, "output_filename")) {
+        if(mr->config.output_filename)
+            av_free(mr->config.output_filename);
+        mr->config.output_filename = av_strdup(value);
+        LOGD("config.output_filename %s\n", mr->config.output_filename);
+    } else if (!strcasecmp(key, "preset")) {
+        if(mr->config.preset)
+            av_free(mr->config.preset);
+        mr->config.preset = av_strdup(value);
+        LOGD("config.preset %s\n", mr->config.preset);
+    } else if (!strcasecmp(key, "tune")) {
+        if(mr->config.tune)
+            av_free(mr->config.tune);
+        mr->config.tune = av_strdup(value);
+        LOGD("config.tune %s\n", mr->config.tune);
+    }
+
     return true;
 }
 

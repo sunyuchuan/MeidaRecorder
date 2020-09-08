@@ -240,6 +240,32 @@ static int add_stream(MuxContext *mc, StreamContext *stream, XMEncoderConfig *co
         goto end;
     }
 
+    avctx->codec_id = stream->codec_id;
+    avctx->bit_rate = config->bit_rate;
+    avctx->width = config->w;
+    avctx->height = config->h;
+    avctx->time_base = config->time_base;
+    avctx->gop_size = config->gop_size;
+    avctx->pix_fmt = config->pix_format;
+    avctx->framerate = (AVRational){ config->fps, 1 };
+    avctx->max_b_frames = config->max_b_frames;
+    if(config->preset != NULL) {
+        av_opt_set(avctx->priv_data, "preset", config->preset, 0);
+    }
+    if(config->tune != NULL) {
+        av_opt_set(avctx->priv_data, "tune", config->tune, 0);
+    }
+    av_opt_set(mc->ofmt_ctx, "movflags", "faststart", AV_OPT_SEARCH_CHILDREN);
+    av_opt_set_double(avctx->priv_data, "crf", (double)config->crf, 0);
+    avctx->codec_tag = 0;
+    if (mc->ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
+        avctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+    if (avcodec_open2(avctx, enc, NULL) < 0) {
+        LOGE("Could not open codec\n");
+        goto end;
+    }
+
     if(!(out_stream = avformat_new_stream(mc->ofmt_ctx, enc)))
     {
         LOGE("avformat_new_stream fail");
@@ -248,21 +274,7 @@ static int add_stream(MuxContext *mc, StreamContext *stream, XMEncoderConfig *co
     }
     out_stream->id = mc->ofmt_ctx->nb_streams - 1;
     stream->out_stream_index = out_stream->id;
-
-    avctx->codec_id = stream->codec_id;
-    avctx->bit_rate = config->bit_rate;
-    avctx->width = config->w;
-    avctx->height = config->h;
-    avctx->time_base = out_stream->time_base = config->time_base;
-    avctx->gop_size = config->gop_size;
-    avctx->pix_fmt = config->pix_format;
-
-    av_opt_set(avctx->priv_data, "preset", config->preset, 0);
-    //av_opt_set(avctx->priv_data, "tune", config->tune, 0);
-    av_opt_set_double(avctx->priv_data, "crf", (double)config->crf, 0);
-    avctx->codec_tag = 0;
-    if (mc->ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
-        avctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    out_stream->time_base = config->time_base;
 
     if((ret = avcodec_parameters_from_context(out_stream->codecpar, avctx)) < 0)
     {
@@ -379,27 +391,6 @@ void muxer_config(XMMediaMuxer *mm, XMEncoderConfig *config)
     mm->config = *config;
 }
 
-static void muxer_config_init(XMEncoderConfig *config)
-{
-    if(!config)
-        return;
-
-    config->w = 540;
-    config->h = 960;
-    config->bit_rate = 1350000;
-    config->fps = 24;
-    config->gop_size = 125;
-    config->pix_format = AV_PIX_FMT_YUV420P;
-    config->mime = MIME_VIDEO_AVC;
-    config->codec_id = AV_CODEC_ID_H264;
-    config->preset = "fast";
-    config->tune = "zerolatency";
-    config->crf = 23;
-    config->multiple = 100;
-    config->time_base = (AVRational) {1, config->fps * config->multiple};
-    config->output_filename = "/sdcard/camera_test.mp4";
-}
-
 XMMediaMuxer *muxer_create(void *mr)
 {
     XMMediaMuxer *mm = (XMMediaMuxer *)calloc(1, sizeof(XMMediaMuxer));
@@ -411,7 +402,6 @@ XMMediaMuxer *muxer_create(void *mr)
     mm->abort_muxer= false;
     mm->mRunning = false;
     mm->opaque = mr;
-    muxer_config_init(&mm->config);
     pthread_mutex_init(&mm->mutex, NULL);
     pthread_cond_init(&mm->mCondition, NULL);
     packet_queue_init(&mm->videoq);

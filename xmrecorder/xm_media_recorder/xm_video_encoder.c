@@ -150,18 +150,20 @@ static int VEncoder_queue_sizes(IEncoder_Opaque *opaque)
 
 static int VEncoder_enqueue(IEncoder_Opaque *opaque, IEncoder_QueueData *qdata)
 {
+    int ret = -1;
     if(!opaque || !qdata)
-        return -1;
+        return ret;
 
     if(opaque->abort)
     {
         LOGE("VEncoder_enqueue abort\n");
         rgba_data_free(&qdata->rgba_data);
-        return -1;
+        return ret;
     }
 
     int cur_w = IJKALIGN(qdata->rgba_data.w, 2);
     int cur_h = IJKALIGN(qdata->rgba_data.h, 2);
+
     if(opaque->config.w != cur_w || opaque->config.h != cur_h)
     {
         LOGE("rgba width or height changed, recorder exit, src w %d, h %d, cur w %d, h %d",
@@ -170,7 +172,7 @@ static int VEncoder_enqueue(IEncoder_Opaque *opaque, IEncoder_QueueData *qdata)
         //opaque->config.h = qdata->rgba_data.h;
         rgba_data_free(&qdata->rgba_data);
         //VEncoder_stop(opaque);
-        return -1;
+        return ret;
     }
 
     /*if(VEncoder_queue_sizes(opaque) > PKT_QUEUE_MAX_SIZE)
@@ -185,12 +187,20 @@ static int VEncoder_enqueue(IEncoder_Opaque *opaque, IEncoder_QueueData *qdata)
         qdata->rgba_data.pts = 0;
         opaque->cur_pts = 0;
     } else {
-        int64_t num_timebase = (int64_t)((av_gettime() - opaque->last_time) / ((float)(1000000 * opaque->config.time_base.num) / (float)opaque->config.time_base.den));
-        qdata->rgba_data.pts = opaque->cur_pts + num_timebase;
+        if(opaque->config.CFR) {
+            qdata->rgba_data.pts = opaque->cur_pts + opaque->interval_pts;
+        } else {
+            int64_t num_timebase = (int64_t)((av_gettime() - opaque->last_time) / ((float)(1000000 * opaque->config.time_base.num) / (float)opaque->config.time_base.den));
+            qdata->rgba_data.pts = opaque->cur_pts + num_timebase;
+        }
         opaque->cur_pts = qdata->rgba_data.pts;
     }
     opaque->last_time = av_gettime();
-    return rgba_queue_put(opaque->queue, &qdata->rgba_data);
+    if((ret = rgba_queue_put(opaque->queue, &qdata->rgba_data)) < 0)
+    {
+        rgba_data_free(&qdata->rgba_data);
+    }
+    return ret;
 }
 
 static bool VEncoder_flush(IEncoder_Opaque *opaque)
@@ -390,7 +400,12 @@ static int VEncoder_config_l(Encoder *encoder, XMEncoderConfig *config)
     av_dict_set_int(&video_opt, "pix_format", config->pix_format, 0);
     av_dict_set_int(&video_opt, "gop_size", config->gop_size, 0);
     av_dict_set_int(&video_opt, "framerate", config->fps, 0);
-    av_dict_set(&video_opt, "preset", config->preset, 0);
+    if(config->preset != NULL) {
+        av_dict_set(&video_opt, "preset", config->preset, 0);
+    }
+    if(config->tune != NULL) {
+        av_dict_set(&video_opt, "tune", config->tune, 0);
+    }
     av_dict_set_int(&video_opt, "crf", config->crf, 0);
     av_dict_set_int(&video_opt, "multiple", config->multiple, 0);
     av_dict_set_int(&video_opt, "max_b_frames", config->max_b_frames, 0);
@@ -421,6 +436,9 @@ static void VEncoder_init(IEncoder_Opaque *opaque)
     opaque->cur_pts = -1;
     opaque->last_time = -1;
     opaque->frame_num = 0;
+    opaque->config.CFR = false;
+    opaque->config.tune = NULL;
+    opaque->config.preset = NULL;
 }
 
 IEncoder *VideoEncoder_create(bool useSoftEncoder, XMPacketQueue *pktq)

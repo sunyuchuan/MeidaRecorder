@@ -9,7 +9,8 @@ LOCAL_CFLAGS += -std=c99
 LOCAL_CFLAGS += -Wno-deprecated-declarations
 LOCAL_LDLIBS += -llog -landroid
 
-LOCAL_C_INCLUDES += $(realpath $(LOCAL_PATH)/xm_media_recorder)
+LOCAL_C_INCLUDES += $(LOCAL_PATH)
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/xm_media_recorder
 LOCAL_C_INCLUDES += $(realpath $(LOCAL_PATH)/..)
 LOCAL_C_INCLUDES += $(realpath $(LOCAL_PATH)/../ijkplayer)
 LOCAL_C_INCLUDES += $(realpath $(LOCAL_PATH)/../ijkj4a)
@@ -26,10 +27,10 @@ LOCAL_SRC_FILES += xm_media_recorder/xm_media_recorder.c
 LOCAL_SRC_FILES += xm_media_recorder/xm_media_muxer.c
 LOCAL_SRC_FILES += xm_media_recorder/xm_packet_queue.c
 
-LOCAL_SHARED_LIBRARIES := ijkffmpeg-$(TARGET_ARCH_ABI) ijksdl-$(TARGET_ARCH_ABI) ijkplayer-$(TARGET_ARCH_ABI)
+LOCAL_SHARED_LIBRARIES := ijkffmpeg ijksdl ijkplayer
 
 LOCAL_STATIC_LIBRARIES := yuv_static
 
-LOCAL_MODULE := xmrecorder-$(TARGET_ARCH_ABI)
+LOCAL_MODULE := xmrecorder
 
 include $(BUILD_SHARED_LIBRARY)
